@@ -1,0 +1,1317 @@
+name: CI
+
+# Teaching orchestrator. Stack knobs live in `env:` once. Layer jobs are *checkout +
+# `uses: ./backend|frontend|tests/.github/actions/<verb>` with `module_dir` from knobs.
+# Commands a student types locally live in the module action, not here. One workflow
+# for clone and takeaway — no *_github.yml siblings. Host / CD: repo vars. Missing
+# SONAR_TOKEN skips Sonar and does not block deploy. TestOps / Telegram stay soft.
+# PR: no CD. Push develop → stage; push main → stage then prod (needs e2e-tests-stage).
+# NEVER jobs.*.strategy / matrix / catalog-* / a sibling frontend list on build-frontend.
+# One FRONTEND_LANG+FRAMEWORK cell (same as backend). Other SPAs: host compose /stack/,
+# not a GHA cartesian. Sibling header/nav → fix that module, do not matrix CD.
+#
+# Graph (ids = jobs: keys):
+#   trigger → backend-unit-tests · frontend-unit-tests · infra-tests
+#   preempt-develop-cd (main) · yield-to-main-cd (develop)
+#   integration-tests ← backend-unit-tests (PR/push; dispatch run_integration)
+#   sonar-backend ← backend-unit-tests + integration-tests
+#   sonar-tests ← infra-tests (slice≠backend); does not gate deploy or publish
+#   ui-tests ← frontend-unit-tests + infra-tests (PR; frontend lane; dispatch run_mock)
+#   sonar-frontend ← frontend-unit-tests + ui-tests
+#   build-backend ← backend-unit-tests + integration-tests (backend lane)
+#   build-backend-kotlin ← same needs (GHCR sibling for the load SUT; not a matrix)
+#   build-backend-python ← same needs (GHCR flask+fastapi+django; one job, three uses; not a matrix)
+#   build-frontend ← ui-tests (frontend lane)
+#   deploy-*-stage ← matching build + sonar-backend / sonar-frontend + preempt/yield (STAGE_APP_DIR, cd_stage)
+#   api-tests-stage ← deploy-backend-stage + infra-tests (STAGE_APP_DIR, run_api_stage)
+#   deploy-backend-load ← api-tests-stage + build-backend (LOAD_APP_DIR; skip if unset; stop all backends, up this SHA)
+#   jmeter-smoke ← deploy-backend-load (etalon JMX vs java cell)
+#   gatling-java-cell ← jmeter-smoke (./.github/actions/gatling-load-cell; java+kotlin DSL vs java)
+#   deploy-backend-load-kotlin ← gatling-java-cell + build-backend-kotlin (stop all backends, up this SHA's kotlin)
+#   jmeter-kotlin-cell ← deploy-backend-load-kotlin (./.github/actions/jmeter-load-cell)
+#   gatling-kotlin-cell ← jmeter-kotlin-cell (same gatling composite vs kotlin)
+#   deploy-backend-load-flask ← gatling-kotlin-cell + build-backend-python (stop all backends, up this SHA's flask)
+#   jmeter-flask-cell ← deploy-backend-load-flask (jmeter-load-cell, cell=backend-python-flask)
+#   deploy-backend-load-fastapi ← jmeter-flask-cell (stop all backends, up this SHA's fastapi)
+#   jmeter-fastapi-cell ← deploy-backend-load-fastapi
+#   deploy-backend-load-django ← jmeter-fastapi-cell (stop all backends, up this SHA's django)
+#   jmeter-django-cell ← deploy-backend-load-django
+#   (no restore-to-java: last successful load deploy stays)
+#   e2e-tests-stage ← api-tests-stage + deploy-frontend-stage + infra-tests (STAGE_APP_DIR, run_e2e_stage)
+#   (load jobs run parallel with e2e-tests-stage; prod deploy-* must NOT need them)
+#   deploy-* ← matching build + sonar-backend / sonar-frontend + e2e-tests-stage (cd_production)
+#   api-tests ← deploy-backend + infra-tests (run_api_prod)
+#   e2e-tests ← api-tests + deploy-frontend + infra-tests (run_e2e_prod)
+#   manual-tests ← e2e-tests; dispatch run_manual (not after deploy-*)
+#   publish-allure-report ← layer jobs + sonar-backend → deploy-github-pages
+#
+# Screenshot: ui-tests (PR) · e2e-tests-stage · e2e-tests (prod compare always on).
+# Dispatch `tests_ui_library` selects the Java UI cell (selenide|selenium|playwright).
+# RAG: ci-workflow-app-orchestrator / ci-workflow-ethalon.
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Lanes: none (tests only, no CD) · backend · frontend · tests (api/e2e vs live stand, no CD) · all. Push infers from paths."
+        type: choice
+        options: [none, backend, frontend, tests, all]
+        default: none
+      deploy_target:
+        description: "CD host: production (main: stage then prod) · stage (develop or main) · both (same chain as production from main). Push develop→stage only; push main→stage then prod."
+        type: choice
+        options: [production, stage, both]
+        default: production
+      run_integration:
+        description: "Run backend integration tests (pre-deploy)"
+        type: boolean
+        default: false
+      run_api:
+        description: "Run API tests (prod: -Denv=prod -DincludeTags=api; stage: -Denv=stage -DincludeTags=api)"
+        type: boolean
+        default: false
+      run_mock:
+        description: "Run ui-tests on the mock stand (flows + screenshot compare)"
+        type: boolean
+        default: false
+      run_e2e:
+        description: "Run E2E tests (prod: -Denv=prod -DincludeTags=e2e; stage: -Denv=stage). Screenshot compare is always on for both stands."
+        type: boolean
+        default: false
+      run_screenshot:
+        description: "Unused for compare (PNG always runs with e2e-tests). Still turns on the e2e job from dispatch."
+        type: boolean
+        default: false
+      run_manual:
+        description: "Run tests tagged manual against prod"
+        type: boolean
+        default: false
+      include_tags:
+        description: "e2e-tests: override -DincludeTags. Empty = run_e2e/run_screenshot selection."
+        type: string
+        default: ""
+      exclude_tags:
+        description: "e2e-tests: add -DexcludeTags independently of include_tags"
+        type: string
+        default: ""
+      tests_ui_library:
+        description: "Java UI cell: selenide → tests-java-junit5-rest_assured-selenide, selenium → rest_assured-selenium, playwright → api_request-playwright. One cell per run (not a matrix). PR/push ignore this and stay on the env default."
+        type: choice
+        options: [selenide, selenium, playwright]
+        default: selenide
+      update_mock_screenshots:
+        description: "ui-tests: rewrite mock screenshot PNGs (skips compare)"
+        type: boolean
+        default: false
+      update_e2e_screenshots:
+        description: "e2e-tests: rewrite prod screenshot PNGs (skips compare)"
+        type: boolean
+        default: false
+      update_stage_screenshots:
+        description: "e2e-tests-stage: rewrite stage screenshot PNGs (skips compare)"
+        type: boolean
+        default: false
+      ALLURE_JOB_RUN_ID:
+        description: "Allure TestOps service parameter. Leave blank."
+        type: string
+        required: false
+        default: ""
+      ALLURE_USERNAME:
+        description: "Allure TestOps service parameter. Leave blank."
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  # PRs: per-ref, cancel stale. main vs develop cannot share cancel-in-progress
+  # (a new develop would abort a prod promotion). Separate groups; jobs
+  # preempt-develop-cd / yield-to-main-cd enforce main priority on the stage host.
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.ref) || github.ref == 'refs/heads/main' && 'ci-cd-main' || github.ref == 'refs/heads/develop' && 'ci-cd-develop' || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/develop' }}
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+  # ── Active stack defaults (change here only) ─────────────────────────────
+  # Path = {zone}/{lang}/{zone}-{lang}-…. Workflow env cannot nest env.*;
+  # jobs pass module_dir via format() below. Adapters dispatch on
+  # BACKEND_LANG / FRONTEND_LANG / TESTS_LANG (GitHub does not interpolate uses:).
+  # Unknown or unwired *_LANG → STOP (never skip, never a foreign action).
+  # backend: java/kotlin → module; python/go/javascript/typescript/csharp/rust → family.
+  # frontend: typescript/javascript → family.
+  # tests: java/kotlin living → short combo/HTTP id; runner slots stay 5-segment;
+  # go/csharp/rust living → short combo/HTTP id; javascript/python/typescript → family.
+  BACKEND_LANG: java
+  BACKEND_FRAMEWORK: spring
+  BACKEND_PORT: "8800"
+  FRONTEND_LANG: typescript
+  FRONTEND_FRAMEWORK: react
+  TESTS_LANG: java
+  TESTS_BUILDER: gradle
+  TESTS_FRAMEWORK: junit5
+  TESTS_REPORT: allure3
+  # Teaching default selenide. Dispatch `tests_ui_library` overrides without a knob commit.
+  # Do not GHA-matrix sibling test modules (same rule as frontends). Probe branches
+  # still flip the literal when the standing cell itself must change.
+  TESTS_UI_LIBRARY: ${{ github.event_name == 'workflow_dispatch' && inputs.tests_ui_library || 'selenide' }}
+  APP_SLUG: autotests-ai-multistack-app
+  JAVA_VERSION: "21"
+  NODE_VERSION: "26"
+  PYTHON_VERSION: "3.12"
+  DOTNET_VERSION: "8.0.x"
+  CHECKOUT_FETCH_DEPTH: "1"
+  GRADLE_CACHE_READ_ONLY: "false"
+  GO_VERSION: "1.27"
+  RUST_VERSION: "1.88"
+  CHROME_FOR_TESTING_VERSION: "148.0.7778.178"
+  ALLURECTL_VERSION: "2.22.0"
+  ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID || '' }}
+  ALLURE_JOB_RUN_UID: ${{ github.run_id }}-${{ github.run_attempt }}
+  ALLURE_USERNAME: ${{ inputs.ALLURE_USERNAME || '' }}
+  # TestOps UI rerun passes ALLURE_JOB_RUN_ID — keep selective testplan.
+  # Ordinary PR/push leave this false so -DincludeTags / layer jobs own selection.
+  ALLURE_KEEP_TESTPLAN: ${{ github.event_name == 'workflow_dispatch' && inputs.ALLURE_JOB_RUN_ID != '' }}
+  # Launch env axes for TestOps filters (real values — not sandbox toy OS/VERSION).
+  BROWSER: Chrome
+  OS: Linux
+  ENDPOINT: prod
+  VERSION: ${{ github.sha }}
+  BRANCH: ${{ github.head_ref || github.ref_name }}
+  SONAR_SCANNER_NPM_VERSION: "5.0.0"
+  SONAR_QUALITY_GATE_TIMEOUT: "600"
+  # Host + mount; stand URLs are composed in actions from LANG + FRAMEWORK.
+  PUBLIC_HOST: ${{ vars.PUBLIC_HOST || 'autotests.ai' }}
+  STACK_MOUNT: ${{ vars.STACK_MOUNT || 'stack' }}
+  DEPLOY_MODE: ${{ vars.DEPLOY_MODE || 'ghcr' }}
+  GRADLE_OPTS: -Dorg.gradle.internal.http.connectionTimeout=120000 -Dorg.gradle.internal.http.socketTimeout=120000 -Dorg.gradle.internal.repository.max.retries=8 -Dorg.gradle.internal.repository.max.interval=3000
+  SELENOID_WEBDRIVER_URL: ${{ secrets.SELENOID_WEBDRIVER_URL || secrets.SELENOID_REMOTE_URL }}
+  SELENOID_PLAYWRIGHT_URL: ${{ secrets.SELENOID_PLAYWRIGHT_URL }}
+  # Stand URLs: actions compose from PUBLIC_HOST + LANG + FRAMEWORK (not listed here).
+  RUN_LABEL: "${{ github.repository }} #${{ github.run_number }}"
+  SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonar.qa.guru' }}
+  # ── Non-secret reporting defaults ───────────────────────────────────────
+  ALLURE_ENDPOINT: ${{ vars.ALLURE_ENDPOINT || 'https://allure.qa.guru' }}
+  ALLURE_PROJECT_ID: ${{ vars.ALLURE_PROJECT_ID }}
+
+jobs:
+  # Same flags as dispatch `deploy`. Push infers from paths so tests/ does not
+  # rebuild the app; PR is none (no CD). Not a layer job.
+  # Shared TestOps job-run lives here too (soft: missing creds / outage disable
+  # live upload without blocking tests) so the graph is one root:
+  # trigger → backend-unit-tests (backend) / frontend-unit-tests (frontend) / infra-tests.
+  trigger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      backend: ${{ steps.set.outputs.backend }}
+      frontend: ${{ steps.set.outputs.frontend }}
+      tests: ${{ steps.set.outputs.tests }}
+      cd_production: ${{ steps.set.outputs.cd_production }}
+      cd_stage: ${{ steps.set.outputs.cd_stage }}
+      run_api_prod: ${{ steps.set.outputs.run_api_prod }}
+      run_api_stage: ${{ steps.set.outputs.run_api_stage }}
+      run_e2e_prod: ${{ steps.set.outputs.run_e2e_prod }}
+      run_e2e_stage: ${{ steps.set.outputs.run_e2e_stage }}
+      enabled: ${{ steps.context.outputs.enabled }}
+      launch_id: ${{ steps.context.outputs.launch_id }}
+      job_run_id: ${{ steps.context.outputs.job_run_id }}
+      launch_url: ${{ steps.context.outputs.launch_url }}
+      # environment.url cannot read env.* — default stand URL from knobs (override stays vars.APP_URL / STAGE_APP_URL).
+      app_url: ${{ format('https://{0}/{1}/backend-{2}-{3}/frontend-{4}-{5}/', env.PUBLIC_HOST, env.STACK_MOUNT, env.BACKEND_LANG, env.BACKEND_FRAMEWORK, env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+      stage_app_url: ${{ format('https://{0}/{1}/backend-{2}-{3}/frontend-{4}-{5}/', vars.STAGE_PUBLIC_HOST || format('stage.{0}', vars.PUBLIC_HOST || 'autotests.ai'), env.STACK_MOUNT, env.BACKEND_LANG, env.BACKEND_FRAMEWORK, env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+    steps:
+      # Always checkout: resolve-ci-lanes / open-testops-context are local composites.
+      # Push needs full history for path lanes (BEFORE..SHA).
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Teaching CI is one cell
+        uses: ./.github/actions/assert-teaching-ci
+      - name: Resolve lanes
+        id: set
+        uses: ./.github/actions/resolve-ci-lanes
+        env:
+          BEFORE: ${{ github.event.before }}
+          DEPLOY: ${{ github.event.inputs.deploy || '' }}
+          DEPLOY_TARGET: ${{ github.event.inputs.deploy_target || '' }}
+          RUN_API: ${{ github.event.inputs.run_api || '' }}
+          RUN_E2E: ${{ github.event.inputs.run_e2e || '' }}
+          RUN_SCREENSHOT: ${{ github.event.inputs.run_screenshot || '' }}
+          UPDATE_E2E_SCREENSHOTS: ${{ github.event.inputs.update_e2e_screenshots || '' }}
+          UPDATE_STAGE_SCREENSHOTS: ${{ github.event.inputs.update_stage_screenshots || '' }}
+          INCLUDE_TAGS: ${{ github.event.inputs.include_tags || '' }}
+          EXCLUDE_TAGS: ${{ github.event.inputs.exclude_tags || '' }}
+      - name: Create or adopt shared TestOps context
+        id: context
+        if: always()
+        uses: ./.github/actions/open-testops-context
+        env:
+          ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+          ALLURE_LAUNCH_NAME: "${{ env.APP_SLUG }} CI — ${{ env.RUN_LABEL }}"
+
+  preempt-develop-cd:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: ./.github/actions/preempt-develop-cd
+
+  # Develop must not start (or continue) if main already claimed the stage.
+  yield-to-main-cd:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: ./.github/actions/yield-to-main-cd
+
+  # Keep the backend root first: GitHub has no explicit graph coordinates and uses
+  # declaration order as a layout hint for otherwise independent jobs.
+  # Layer jobs: *checkout + `uses: ./<family>/.github/actions/<verb>` + module_dir.
+  # Language setup and ./gradlew / npm live in the module action, not here.
+  backend-unit-tests:
+    needs: trigger
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      LAYER: unit
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - &checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ env.CHECKOUT_FETCH_DEPTH }}
+      - uses: ./backend/.github/actions/unit
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+
+  integration-tests:
+    needs: [backend-unit-tests, trigger]
+    if: >-
+      always() && !cancelled() && needs.backend-unit-tests.result == 'success' && (
+        github.event_name == 'pull_request' ||
+        github.event_name == 'push' ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_integration)
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      LAYER: integration
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/integration
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+
+  frontend-unit-tests:
+    needs: trigger
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      LAYER: component
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./frontend/.github/actions/unit
+        with:
+          module_dir: ${{ format('frontend/{0}/frontend-{0}-{1}', env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+
+  infra-tests:
+    needs: [trigger]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      slice: ${{ steps.infra.outputs.slice }}
+    env:
+      LAYER: infra
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - id: infra
+        uses: ./tests/.github/actions/infra
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+          backend_lane: ${{ needs.trigger.outputs.backend }}
+          frontend_lane: ${{ needs.trigger.outputs.frontend }}
+          tests_lane: ${{ needs.trigger.outputs.tests }}
+
+  ui-tests:
+    needs: [trigger, frontend-unit-tests, infra-tests]
+    if: >-
+      always() && !cancelled() &&
+      needs.frontend-unit-tests.result == 'success' &&
+      needs.infra-tests.result == 'success' && (
+        github.event_name == 'pull_request' ||
+        needs.trigger.outputs.frontend == 'true' ||
+        (github.event_name == 'workflow_dispatch' &&
+         (inputs.run_mock || inputs.update_mock_screenshots))
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    env:
+      LAYER: ui
+      SCREENSHOT_OS: linux
+      SCREENSHOT_BROWSER: chrome
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./tests/.github/actions/mock
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+          frontend_dir: ${{ format('frontend/{0}/frontend-{0}-{1}', env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+          update_screenshots: ${{ inputs.update_mock_screenshots || false }}
+
+  sonar-backend:
+    needs: [backend-unit-tests, integration-tests]
+    if: >-
+      !cancelled() &&
+      needs.backend-unit-tests.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      # Do not set SONAR_PROJECT_KEY here: job env cannot nest env.*, and
+      # vars.SONAR_*_PROJECT_KEY pin the teaching cell (breaks stack probes).
+      # The module action uses APP_SLUG + basename(module_dir).
+      CHECKOUT_FETCH_DEPTH: "0"
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+      RUN_SONAR: ${{ secrets.SONAR_TOKEN != '' }}
+    steps:
+      - if: env.RUN_SONAR != 'true'
+        run: echo "SONAR_TOKEN unset — skip Sonar (deploy not gated)"
+      - if: env.RUN_SONAR == 'true'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ env.CHECKOUT_FETCH_DEPTH }}
+      - if: env.RUN_SONAR == 'true'
+        uses: ./backend/.github/actions/sonar
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+
+  # Tests-module Sonar after full infra. Backend-only is ConfigReader coverage
+  # only — skip rather than fail the tests-module gate.
+  sonar-tests:
+    needs: [infra-tests]
+    if: >-
+      !cancelled() &&
+      needs.infra-tests.result == 'success' &&
+      needs.infra-tests.outputs.slice != 'backend'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      # Key = APP_SLUG + tests cell folder (action fallback). Do not hardcode selenide.
+      CHECKOUT_FETCH_DEPTH: "0"
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+      RUN_SONAR: ${{ secrets.SONAR_TOKEN != '' }}
+    steps:
+      - if: env.RUN_SONAR != 'true'
+        run: echo "SONAR_TOKEN unset — skip Sonar (deploy not gated)"
+      - if: env.RUN_SONAR == 'true'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ env.CHECKOUT_FETCH_DEPTH }}
+      - if: env.RUN_SONAR == 'true'
+        uses: ./tests/.github/actions/sonar
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+
+  sonar-frontend:
+    needs: [frontend-unit-tests, ui-tests]
+    if: >-
+      !cancelled() &&
+      needs.frontend-unit-tests.result == 'success' &&
+      (needs.ui-tests.result == 'success' || needs.ui-tests.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      # Key = APP_SLUG + frontend cell folder. vars.SONAR_FRONTEND_PROJECT_KEY
+      # pins typescript-react and fails quality gate on any other cell.
+      CHECKOUT_FETCH_DEPTH: "0"
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      RUN_SONAR: ${{ secrets.SONAR_TOKEN != '' }}
+    steps:
+      - if: env.RUN_SONAR != 'true'
+        run: echo "SONAR_TOKEN unset — skip Sonar (deploy not gated)"
+      - if: env.RUN_SONAR == 'true'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ env.CHECKOUT_FETCH_DEPTH }}
+      - if: env.RUN_SONAR == 'true'
+        uses: ./frontend/.github/actions/sonar
+        with:
+          module_dir: ${{ format('frontend/{0}/frontend-{0}-{1}', env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+
+  build-backend:
+    needs: [backend-unit-tests, integration-tests, trigger]
+    if: >-
+      !cancelled() &&
+      needs.backend-unit-tests.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      needs.trigger.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/build
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+
+  # Load-SUT sibling image. Not a GHA matrix: one extra named job, same knobs
+  # overridden on the job. Stage/prod CD still publishes only the default cell.
+  build-backend-kotlin:
+    needs: [backend-unit-tests, integration-tests, trigger]
+    if: >-
+      !cancelled() &&
+      needs.backend-unit-tests.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      needs.trigger.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BACKEND_LANG: kotlin
+      BACKEND_FRAMEWORK: spring
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/build
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+
+  # Load-SUT python sibling images. Not a GHA matrix: one named job, three
+  # sequential uses. Stage/prod CD still publishes only the default cell.
+  # Do not add these services to DEPLOY_COMPOSE_SERVICES on the java load job.
+  build-backend-python:
+    needs: [backend-unit-tests, integration-tests, trigger]
+    if: >-
+      !cancelled() &&
+      needs.backend-unit-tests.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      needs.trigger.outputs.backend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BACKEND_LANG: python
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/build
+        with:
+          module_dir: backend/python/backend-python-flask
+      - uses: ./backend/.github/actions/build
+        with:
+          module_dir: backend/python/backend-python-fastapi
+      - uses: ./backend/.github/actions/build
+        with:
+          module_dir: backend/python/backend-python-django
+
+  build-frontend:
+    needs: [ui-tests, trigger]
+    if: >-
+      !cancelled() &&
+      needs.ui-tests.result == 'success' &&
+      needs.trigger.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./frontend/.github/actions/build
+        with:
+          module_dir: ${{ format('frontend/{0}/frontend-{0}-{1}', env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+
+  deploy-backend:
+    needs: [build-backend, sonar-backend, trigger, e2e-tests-stage]
+    if: >-
+      !cancelled() &&
+      needs.build-backend.result == 'success' &&
+      (needs.sonar-backend.result == 'success' || needs.sonar-backend.result == 'skipped') &&
+      needs.trigger.outputs.cd_production == 'true' &&
+      (needs.e2e-tests-stage.result == 'success' ||
+       (needs.e2e-tests-stage.result == 'skipped' && vars.STAGE_APP_DIR == ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ vars.DEPLOY_ENVIRONMENT || 'multistack-production' }}
+      url: ${{ vars.APP_URL || needs.trigger.outputs.app_url }}
+    concurrency:
+      group: deploy-autotests-ai-multistack-app
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_APP_DIR: ${{ vars.DEPLOY_APP_DIR || '/home/autotests_ai_multistack/autotests-ai-multistack-app' }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.DEPLOY_COMPOSE_PROJECT || 'autotests-ai-multistack-app' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.DEPLOY_COMPOSE_ENV_FILE || '' }}
+      DEPLOY_HEALTH_URL: ${{ vars.DEPLOY_HEALTH_URL || 'http://127.0.0.1:8800/api/health' }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+          stand: prod
+
+  # FE deploy after teaching build + sonar. One FRONTEND — no sibling matrix.
+  deploy-frontend:
+    needs: [build-frontend, sonar-frontend, trigger, e2e-tests-stage]
+    if: >-
+      !cancelled() &&
+      needs.build-frontend.result == 'success' &&
+      (needs.sonar-frontend.result == 'success' || needs.sonar-frontend.result == 'skipped') &&
+      needs.trigger.outputs.cd_production == 'true' &&
+      (needs.e2e-tests-stage.result == 'success' ||
+       (needs.e2e-tests-stage.result == 'skipped' && vars.STAGE_APP_DIR == ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: ${{ vars.DEPLOY_ENVIRONMENT || 'multistack-production' }}
+      url: ${{ vars.APP_URL || needs.trigger.outputs.app_url }}
+    concurrency:
+      group: deploy-autotests-ai-multistack-app
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_APP_DIR: ${{ vars.DEPLOY_APP_DIR || '/home/autotests_ai_multistack/autotests-ai-multistack-app' }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.DEPLOY_COMPOSE_PROJECT || 'autotests-ai-multistack-app' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.DEPLOY_COMPOSE_ENV_FILE || '' }}
+      DEPLOY_HEALTH_URL: ${{ vars.DEPLOY_FRONTEND_HEALTH_URL || '' }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./frontend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('frontend/{0}/frontend-{0}-{1}', env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+          stand: prod
+
+  # Stage twin — push develop (WIP) or push main / dispatch production|both (promotion).
+  # Own checkout. Skip until repo var STAGE_APP_DIR is set.
+  deploy-backend-stage:
+    needs: [build-backend, sonar-backend, trigger, preempt-develop-cd, yield-to-main-cd]
+    if: >-
+      always() && !cancelled() &&
+      needs.build-backend.result == 'success' &&
+      (needs.sonar-backend.result == 'success' || needs.sonar-backend.result == 'skipped') &&
+      vars.STAGE_APP_DIR != '' &&
+      needs.trigger.outputs.cd_stage == 'true' &&
+      (needs.preempt-develop-cd.result == 'success' || needs.preempt-develop-cd.result == 'skipped') &&
+      (needs.yield-to-main-cd.result == 'success' || needs.yield-to-main-cd.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ vars.STAGE_ENVIRONMENT || 'multistack-stage' }}
+      url: ${{ vars.STAGE_APP_URL || needs.trigger.outputs.stage_app_url }}
+    concurrency:
+      group: deploy-autotests-ai-multistack-app-stage
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_APP_DIR: ${{ vars.STAGE_APP_DIR }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.STAGE_COMPOSE_PROJECT || 'autotests-ai-multistack-app-stage' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.STAGE_COMPOSE_ENV_FILE || 'deploy/stage.env' }}
+      DEPLOY_HEALTH_URL: ${{ vars.STAGE_HEALTH_URL || 'http://127.0.0.1:18800/api/health' }}
+      DEPLOY_HOST: ${{ vars.STAGE_HOST || vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.STAGE_USER || vars.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+          stand: stage
+
+  deploy-frontend-stage:
+    needs: [build-frontend, sonar-frontend, trigger, preempt-develop-cd, yield-to-main-cd]
+    if: >-
+      always() && !cancelled() &&
+      needs.build-frontend.result == 'success' &&
+      (needs.sonar-frontend.result == 'success' || needs.sonar-frontend.result == 'skipped') &&
+      vars.STAGE_APP_DIR != '' &&
+      needs.trigger.outputs.cd_stage == 'true' &&
+      (needs.preempt-develop-cd.result == 'success' || needs.preempt-develop-cd.result == 'skipped') &&
+      (needs.yield-to-main-cd.result == 'success' || needs.yield-to-main-cd.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: ${{ vars.STAGE_ENVIRONMENT || 'multistack-stage' }}
+      url: ${{ vars.STAGE_APP_URL || needs.trigger.outputs.stage_app_url }}
+    concurrency:
+      group: deploy-autotests-ai-multistack-app-stage
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_APP_DIR: ${{ vars.STAGE_APP_DIR }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.STAGE_COMPOSE_PROJECT || 'autotests-ai-multistack-app-stage' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.STAGE_COMPOSE_ENV_FILE || 'deploy/stage.env' }}
+      DEPLOY_HEALTH_URL: ${{ vars.STAGE_FRONTEND_HEALTH_URL || vars.DEPLOY_FRONTEND_HEALTH_URL || '' }}
+      DEPLOY_HOST: ${{ vars.STAGE_HOST || vars.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ vars.STAGE_USER || vars.DEPLOY_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./frontend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('frontend/{0}/frontend-{0}-{1}', env.FRONTEND_LANG, env.FRONTEND_FRAMEWORK) }}
+          stand: stage
+
+  # Rest Assured against deployed backend — starts as soon as that lane finishes (FE may
+  # still be deploying). Dispatch can run api without a backend deploy this run.
+  api-tests:
+    needs: [deploy-backend, trigger, infra-tests]
+    if: >-
+      always() && !cancelled() &&
+      needs.infra-tests.result == 'success' &&
+      needs.trigger.outputs.run_api_prod == 'true' &&
+      (needs.deploy-backend.result == 'success' ||
+       needs.deploy-backend.result == 'skipped') &&
+      (needs.trigger.outputs.backend != 'true' ||
+       needs.deploy-backend.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      LAYER: api
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./tests/.github/actions/api
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+          stand: prod
+
+  e2e-tests:
+    needs: [api-tests, deploy-frontend, trigger, infra-tests]
+    if: >-
+      always() && !cancelled() &&
+      needs.infra-tests.result == 'success' &&
+      needs.trigger.outputs.run_e2e_prod == 'true' &&
+      (needs.deploy-frontend.result == 'success' ||
+       needs.deploy-frontend.result == 'skipped') &&
+      (needs.api-tests.result == 'success' ||
+       (needs.api-tests.result == 'skipped' &&
+        needs.deploy-frontend.result == 'success') ||
+       (needs.api-tests.result == 'skipped' &&
+        needs.trigger.outputs.backend != 'true' &&
+        needs.trigger.outputs.frontend != 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      LAYER: e2e
+      APP_URL: ${{ vars.APP_URL }}
+      SCREENSHOT_OS: linux
+      SCREENSHOT_BROWSER: chrome
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+      SELENOID_WEBDRIVER_URL: ${{ secrets.SELENOID_WEBDRIVER_URL || secrets.SELENOID_REMOTE_URL }}
+      SELENOID_PLAYWRIGHT_URL: ${{ secrets.SELENOID_PLAYWRIGHT_URL }}
+    steps:
+      - *checkout
+      - uses: ./tests/.github/actions/e2e
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+          stand: prod
+          include_tags: ${{ inputs.include_tags || '' }}
+          exclude_tags: ${{ inputs.exclude_tags || '' }}
+          run_e2e: ${{ inputs.run_e2e || false }}
+          run_screenshot: ${{ inputs.run_screenshot || false }}
+          update_screenshots: ${{ inputs.update_e2e_screenshots || false }}
+
+  api-tests-stage:
+    needs: [deploy-backend-stage, trigger, infra-tests]
+    if: >-
+      always() && !cancelled() &&
+      needs.infra-tests.result == 'success' &&
+      vars.STAGE_APP_DIR != '' &&
+      needs.trigger.outputs.run_api_stage == 'true' &&
+      (needs.deploy-backend-stage.result == 'success' ||
+       needs.deploy-backend-stage.result == 'skipped') &&
+      (needs.trigger.outputs.backend != 'true' ||
+       needs.deploy-backend-stage.result == 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      LAYER: api
+      ENDPOINT: stage
+      PUBLIC_HOST: ${{ vars.STAGE_PUBLIC_HOST || format('stage.{0}', vars.PUBLIC_HOST || 'autotests.ai') }}
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./tests/.github/actions/api
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+          stand: stage
+
+  # Isolated load stand after stage API is green. Skip until repo var LOAD_APP_DIR
+  # is set. Does not share STAGE_APP_DIR / DEPLOY_APP_DIR. Prod deploy-* must not
+  # need this job. Parallel with e2e-tests-stage. Each load deploy stops every
+  # backend-* and force-recreates this SHA's cell. No trailing restore-to-java.
+  deploy-backend-load:
+    needs: [api-tests-stage, build-backend, trigger]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.api-tests-stage.result == 'success' &&
+      needs.build-backend.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ vars.LOAD_ENVIRONMENT || 'multistack-load' }}
+      url: ${{ vars.LOAD_API_URL }}
+    concurrency:
+      group: deploy-autotests-ai-multistack-app-load
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      DEPLOY_APP_DIR: ${{ vars.LOAD_APP_DIR }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.LOAD_COMPOSE_PROJECT || 'autotests-ai-multistack-app-load' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.LOAD_COMPOSE_ENV_FILE || '' }}
+      DEPLOY_COMPOSE_SERVICES: postgres backend-java-spring
+      DEPLOY_SINGLE_BACKEND: "true"
+      DEPLOY_HEALTH_URL: ${{ vars.LOAD_HEALTH_URL || 'http://127.0.0.1:8800/api/health' }}
+      DEPLOY_HOST: ${{ vars.LOAD_HOST }}
+      DEPLOY_USER: ${{ vars.LOAD_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+          stand: load
+
+  jmeter-smoke:
+    needs: [deploy-backend-load]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.deploy-backend-load.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      API_BASE_URL: ${{ vars.LOAD_API_URL }}
+      JMETER_ALLOW_PUBLIC: "true"
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./tests/.github/actions/performance
+        with:
+          module_dir: tests/java/tests-java-jmeter
+
+  # Host is on java-spring. gatling-load-cell rewrites LOAD_API_URL
+  # (bash; GHA has no replace()) so pathPrefix matches the live nginx mount.
+  gatling-java-cell:
+    needs: [jmeter-smoke]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.jmeter-smoke.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      API_BASE_URL: ${{ vars.LOAD_API_URL }}
+      GATLING_ALLOW_PUBLIC: "true"
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/gatling-load-cell
+        with:
+          cell: backend-java-spring
+
+  # Stop every backend-*, up kotlin-spring from this SHA. Same SSH concurrency
+  # group as deploy-backend-load so the two deploys cannot overlap. Waits for
+  # Gatling on java so two injectors do not share the 2 vCPU VM.
+  deploy-backend-load-kotlin:
+    needs: [jmeter-smoke, gatling-java-cell, build-backend-kotlin]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.jmeter-smoke.result == 'success' &&
+      (needs.gatling-java-cell.result == 'success' ||
+       needs.gatling-java-cell.result == 'failure') &&
+      needs.build-backend-kotlin.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ vars.LOAD_ENVIRONMENT || 'multistack-load' }}
+      url: https://load.autotests.ai/backend-kotlin-spring
+    concurrency:
+      group: deploy-autotests-ai-multistack-app-load
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BACKEND_LANG: kotlin
+      BACKEND_FRAMEWORK: spring
+      DEPLOY_APP_DIR: ${{ vars.LOAD_APP_DIR }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.LOAD_COMPOSE_PROJECT || 'autotests-ai-multistack-app-load' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.LOAD_COMPOSE_ENV_FILE || '' }}
+      DEPLOY_COMPOSE_SERVICES: postgres backend-kotlin-spring
+      DEPLOY_SINGLE_BACKEND: "true"
+      DEPLOY_HEALTH_URL: http://127.0.0.1:8810/api/health
+      DEPLOY_HOST: ${{ vars.LOAD_HOST }}
+      DEPLOY_USER: ${{ vars.LOAD_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+          stand: load
+
+  # Host is already on kotlin-spring. jmeter-load-cell rewrites LOAD_API_URL
+  # (bash; GHA has no replace()) so pathPrefix matches the live nginx mount.
+  jmeter-kotlin-cell:
+    needs: [deploy-backend-load-kotlin]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.deploy-backend-load-kotlin.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      API_BASE_URL: ${{ vars.LOAD_API_URL }}
+      JMETER_ALLOW_PUBLIC: "true"
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/jmeter-load-cell
+        with:
+          cell: backend-kotlin-spring
+
+  gatling-kotlin-cell:
+    needs: [jmeter-kotlin-cell]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.jmeter-kotlin-cell.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      API_BASE_URL: ${{ vars.LOAD_API_URL }}
+      GATLING_ALLOW_PUBLIC: "true"
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/gatling-load-cell
+        with:
+          cell: backend-kotlin-spring
+
+  # Stop every backend-*, up python-flask from this SHA. Same SSH concurrency group.
+  deploy-backend-load-flask:
+    needs: [jmeter-kotlin-cell, gatling-kotlin-cell, build-backend-python]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.jmeter-kotlin-cell.result == 'success' &&
+      (needs.gatling-kotlin-cell.result == 'success' ||
+       needs.gatling-kotlin-cell.result == 'failure') &&
+      needs.build-backend-python.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ vars.LOAD_ENVIRONMENT || 'multistack-load' }}
+      url: https://load.autotests.ai/backend-python-flask
+    concurrency:
+      group: deploy-autotests-ai-multistack-app-load
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BACKEND_LANG: python
+      BACKEND_FRAMEWORK: flask
+      DEPLOY_APP_DIR: ${{ vars.LOAD_APP_DIR }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.LOAD_COMPOSE_PROJECT || 'autotests-ai-multistack-app-load' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.LOAD_COMPOSE_ENV_FILE || '' }}
+      DEPLOY_COMPOSE_SERVICES: postgres backend-python-flask
+      DEPLOY_SINGLE_BACKEND: "true"
+      DEPLOY_HEALTH_URL: http://127.0.0.1:8820/api/health
+      DEPLOY_HOST: ${{ vars.LOAD_HOST }}
+      DEPLOY_USER: ${{ vars.LOAD_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+          stand: load
+
+  jmeter-flask-cell:
+    needs: [deploy-backend-load-flask]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.deploy-backend-load-flask.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      API_BASE_URL: ${{ vars.LOAD_API_URL }}
+      JMETER_ALLOW_PUBLIC: "true"
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/jmeter-load-cell
+        with:
+          cell: backend-python-flask
+
+  deploy-backend-load-fastapi:
+    needs: [deploy-backend-load-flask, jmeter-flask-cell, build-backend-python]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.deploy-backend-load-flask.result == 'success' &&
+      (needs.jmeter-flask-cell.result == 'success' ||
+       needs.jmeter-flask-cell.result == 'failure') &&
+      needs.build-backend-python.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ vars.LOAD_ENVIRONMENT || 'multistack-load' }}
+      url: https://load.autotests.ai/backend-python-fastapi
+    concurrency:
+      group: deploy-autotests-ai-multistack-app-load
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BACKEND_LANG: python
+      BACKEND_FRAMEWORK: fastapi
+      DEPLOY_APP_DIR: ${{ vars.LOAD_APP_DIR }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.LOAD_COMPOSE_PROJECT || 'autotests-ai-multistack-app-load' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.LOAD_COMPOSE_ENV_FILE || '' }}
+      DEPLOY_COMPOSE_SERVICES: postgres backend-python-fastapi
+      DEPLOY_SINGLE_BACKEND: "true"
+      DEPLOY_HEALTH_URL: http://127.0.0.1:8821/api/health
+      DEPLOY_HOST: ${{ vars.LOAD_HOST }}
+      DEPLOY_USER: ${{ vars.LOAD_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+          stand: load
+
+  jmeter-fastapi-cell:
+    needs: [deploy-backend-load-fastapi]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.deploy-backend-load-fastapi.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      API_BASE_URL: ${{ vars.LOAD_API_URL }}
+      JMETER_ALLOW_PUBLIC: "true"
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/jmeter-load-cell
+        with:
+          cell: backend-python-fastapi
+
+  deploy-backend-load-django:
+    needs: [deploy-backend-load-fastapi, jmeter-fastapi-cell, build-backend-python]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.deploy-backend-load-fastapi.result == 'success' &&
+      (needs.jmeter-fastapi-cell.result == 'success' ||
+       needs.jmeter-fastapi-cell.result == 'failure') &&
+      needs.build-backend-python.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: ${{ vars.LOAD_ENVIRONMENT || 'multistack-load' }}
+      url: https://load.autotests.ai/backend-python-django
+    concurrency:
+      group: deploy-autotests-ai-multistack-app-load
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      BACKEND_LANG: python
+      BACKEND_FRAMEWORK: django
+      DEPLOY_APP_DIR: ${{ vars.LOAD_APP_DIR }}
+      DEPLOY_COMPOSE_PROJECT: ${{ vars.LOAD_COMPOSE_PROJECT || 'autotests-ai-multistack-app-load' }}
+      DEPLOY_COMPOSE_ENV_FILE: ${{ vars.LOAD_COMPOSE_ENV_FILE || '' }}
+      DEPLOY_COMPOSE_SERVICES: postgres backend-python-django
+      DEPLOY_SINGLE_BACKEND: "true"
+      DEPLOY_HEALTH_URL: http://127.0.0.1:8822/api/health
+      DEPLOY_HOST: ${{ vars.LOAD_HOST }}
+      DEPLOY_USER: ${{ vars.LOAD_USER }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - *checkout
+      - uses: ./backend/.github/actions/deploy
+        with:
+          module_dir: ${{ format('backend/{0}/backend-{0}-{1}', env.BACKEND_LANG, env.BACKEND_FRAMEWORK) }}
+          stand: load
+
+  jmeter-django-cell:
+    needs: [deploy-backend-load-django]
+    if: >-
+      always() && !cancelled() &&
+      vars.LOAD_APP_DIR != '' &&
+      needs.deploy-backend-load-django.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      API_BASE_URL: ${{ vars.LOAD_API_URL }}
+      JMETER_ALLOW_PUBLIC: "true"
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+    steps:
+      - *checkout
+      - uses: ./.github/actions/jmeter-load-cell
+        with:
+          cell: backend-python-django
+
+  e2e-tests-stage:
+    needs: [api-tests-stage, deploy-frontend-stage, trigger, infra-tests]
+    if: >-
+      always() && !cancelled() &&
+      needs.infra-tests.result == 'success' &&
+      vars.STAGE_APP_DIR != '' &&
+      needs.trigger.outputs.run_e2e_stage == 'true' &&
+      (needs.deploy-frontend-stage.result == 'success' ||
+       needs.deploy-frontend-stage.result == 'skipped') &&
+      (needs.api-tests-stage.result == 'success' ||
+       (needs.api-tests-stage.result == 'skipped' &&
+        needs.deploy-frontend-stage.result == 'success') ||
+       (needs.api-tests-stage.result == 'skipped' &&
+        needs.trigger.outputs.backend != 'true' &&
+        needs.trigger.outputs.frontend != 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      LAYER: e2e
+      ENDPOINT: stage
+      APP_URL: ${{ vars.STAGE_APP_URL }}
+      PUBLIC_HOST: ${{ vars.STAGE_PUBLIC_HOST || format('stage.{0}', vars.PUBLIC_HOST || 'autotests.ai') }}
+      SCREENSHOT_OS: linux
+      SCREENSHOT_BROWSER: chrome
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+      SELENOID_WEBDRIVER_URL: ${{ secrets.SELENOID_WEBDRIVER_URL || secrets.SELENOID_REMOTE_URL }}
+      SELENOID_PLAYWRIGHT_URL: ${{ secrets.SELENOID_PLAYWRIGHT_URL }}
+    steps:
+      - *checkout
+      - uses: ./tests/.github/actions/e2e
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+          stand: stage
+          include_tags: ${{ inputs.include_tags || '' }}
+          exclude_tags: ${{ inputs.exclude_tags || '' }}
+          run_e2e: ${{ inputs.run_e2e || false }}
+          run_screenshot: ${{ inputs.run_screenshot || false }}
+          update_screenshots: ${{ inputs.update_stage_screenshots || false }}
+
+  manual-tests:
+    needs: [e2e-tests, trigger]
+    if: >-
+      always() && !cancelled() &&
+      github.event_name == 'workflow_dispatch' && inputs.run_manual &&
+      (needs.e2e-tests.result == 'success' || needs.e2e-tests.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      LAYER: manual
+      APP_URL: ${{ vars.APP_URL }}
+      ALLURE_LIVE_ENABLED: ${{ needs.trigger.outputs.enabled }}
+      ALLURE_LAUNCH_ID: ${{ needs.trigger.outputs.launch_id }}
+      ALLURE_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      GRADLE_ENCRYPTION_KEY: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+      SELENOID_WEBDRIVER_URL: ${{ secrets.SELENOID_WEBDRIVER_URL || secrets.SELENOID_REMOTE_URL }}
+      SELENOID_PLAYWRIGHT_URL: ${{ secrets.SELENOID_PLAYWRIGHT_URL }}
+    steps:
+      - *checkout
+      - uses: ./tests/.github/actions/manual
+        with:
+          module_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+          stand: prod
+
+  # Gating Allure generate after e2e. Lock pins + npm ci live here (not extra
+  # graph boxes). Pages push + Telegram are soft after generate; live Pages
+  # deploy is the following job (deploy-pages@v5).
+  publish-allure-report:
+    name: publish-allure-report
+    needs:
+      - backend-unit-tests
+      - frontend-unit-tests
+      - infra-tests
+      - ui-tests
+      - integration-tests
+      - api-tests
+      - e2e-tests
+      - api-tests-stage
+      - e2e-tests-stage
+      - manual-tests
+      - trigger
+      - sonar-backend
+    if: always() && !cancelled()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+    env:
+      REPORT_ID: ${{ github.run_id }}
+      GH_PAGES_BASE: ${{ vars.GH_PAGES_BASE || format('https://{0}.github.io/{1}', github.repository_owner, github.event.repository.name) }}
+      ALLURE_LIVE_ENABLED: ${{ vars.ALLURE_PROJECT_ID != '' }}
+      NPM_CI_IF: "true"
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID || '-1004381150566' }}
+      TELEGRAM_TOPIC_ID: ${{ vars.TELEGRAM_TOPIC_ID || secrets.TELEGRAM_TOPIC_ID || '3' }}
+    outputs:
+      testops_launch_url: ${{ steps.publish.outputs.launch_url }}
+      pages_artifact: ${{ steps.publish.outputs.pages_artifact }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ env.CHECKOUT_FETCH_DEPTH }}
+      - id: publish
+        uses: ./.github/actions/publish-allure-report
+        with:
+          tests_dir: ${{ (env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin') && format('tests/{0}/tests-{0}-{1}-{2}-{3}-{4}', env.TESTS_LANG, env.TESTS_BUILDER, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || (env.TESTS_LANG == 'go' || env.TESTS_LANG == 'csharp' || env.TESTS_LANG == 'rust') && format('tests/{0}/tests-{0}-{1}-{2}-{3}', env.TESTS_LANG, env.TESTS_FRAMEWORK, env.TESTS_REPORT, env.TESTS_UI_LIBRARY) || format('tests/{0}/tests-{0}-{1}', env.TESTS_LANG, env.TESTS_UI_LIBRARY) }}
+        env:
+          CI_LAYER_JOBS: ${{ toJSON(needs) }}
+          TRIGGER_ENABLED: ${{ needs.trigger.outputs.enabled }}
+          TRIGGER_JOB_RUN_ID: ${{ needs.trigger.outputs.job_run_id }}
+          TRIGGER_LAUNCH_URL: ${{ needs.trigger.outputs.launch_url }}
+
+  # Live GitHub Pages from main only (CNAME). Soft: a 503 must not fail generate.
+  # Retry: pages.yml. Develop uses TestOps, not this job.
+  deploy-github-pages:
+    name: deploy-github-pages
+    needs: publish-allure-report
+    if: >-
+      always() && !cancelled() &&
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/main' &&
+      needs.publish-allure-report.outputs.pages_artifact == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v5

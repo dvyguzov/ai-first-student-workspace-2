@@ -1,0 +1,35 @@
+---
+id: quality-gates
+domain: testing
+adr: 005
+tags: [jacoco, sonar, coverage, pyramid]
+related: [test-pyramid]
+---
+# JaCoCo / Sonar ≠ пирамида
+
+**id:** `quality-gates`
+
+Три разные оси. Их нельзя складывать в одно число «покрытие 100%».  
+Пирамида считается **целиком** (сценарии продукта × верный ярус), не как «каждый `@Layer` довести до 100%».
+
+| Ось | Что меряет | В takeaway сейчас |
+|-----|------------|-------------------|
+| Пирамида | сценарий на верном `@Layer` | таблица `qa-coverage-audit` |
+| JaCoCo | % строк/веток **unit** backend | `backend-java-spring`: LINE+BRANCH **1.0** (CI job `backend-unit-tests`) |
+| Vitest coverage | % JS/TS component | job `frontend-unit-tests` (`npm test -- --coverage`) |
+| Sonar QG | bugs / smells / duplications / coverage ingest | школьный [sonar.qa.guru](https://sonar.qa.guru) — **опционально**; в `ci.yml` takeaway **нет** Sonar |
+
+E2e/Selenide **не** кормит JaCoCo живого Spring. «100% e2e» строками — бессмыслица.
+
+## Do
+
+- Backend unit: оставить (или довести) `jacocoTestCoverageVerification`.
+- Дыры сценариев закрывать ярусом (`qa-pyramid-plan`), не «ещё e2e».
+- Sonar: отдельный projectKey на модуль (`student-<login>-backend` / `-frontend` / `-tests`), не один mega-key.
+- Пока нет `SONAR_TOKEN` — **предложить** wiring, не ломать CI.
+
+## Don't
+
+- Требовать 100% line на фронте в первом гейте.
+- Включать `SONAR_REQUIRED=true` до зелёного QG на дашборде.
+- Класть токен в workflow-файл или в чат.

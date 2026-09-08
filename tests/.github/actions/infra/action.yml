@@ -1,0 +1,94 @@
+name: infra
+description: Dispatch infra to the active tests language (module_dir).
+inputs:
+  module_dir:
+    required: true
+  backend_lane:
+    required: false
+    default: 'false'
+  frontend_lane:
+    required: false
+    default: 'false'
+  tests_lane:
+    required: false
+    default: 'false'
+outputs:
+  slice:
+    description: all or backend
+    value: ${{ steps.module.outputs.slice || steps.python.outputs.slice || steps.typescript.outputs.slice || steps.go.outputs.slice || steps.csharp.outputs.slice || steps.rust.outputs.slice }}
+runs:
+  using: composite
+  steps:
+    - id: dir
+      uses: ./.github/actions/resolve-module-dir
+      with:
+        module_dir: ${{ inputs.module_dir }}
+    # JVM adapter lives in the canon selenide module; module_dir is the active cell (Java or Kotlin).
+    - if: env.TESTS_LANG == 'java' || env.TESTS_LANG == 'kotlin'
+      id: module
+      uses: ./tests/java/tests-java-junit5-rest_assured-selenide/.github/actions/infra
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        backend_lane: ${{ inputs.backend_lane }}
+        frontend_lane: ${{ inputs.frontend_lane }}
+        tests_lane: ${{ inputs.tests_lane }}
+    - if: env.TESTS_LANG == 'javascript'
+      uses: ./tests/javascript/.github/actions/infra
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        backend_lane: ${{ inputs.backend_lane }}
+        frontend_lane: ${{ inputs.frontend_lane }}
+        tests_lane: ${{ inputs.tests_lane }}
+    - if: env.TESTS_LANG == 'python'
+      id: python
+      uses: ./tests/python/.github/actions/infra
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        backend_lane: ${{ inputs.backend_lane }}
+        frontend_lane: ${{ inputs.frontend_lane }}
+        tests_lane: ${{ inputs.tests_lane }}
+    - if: env.TESTS_LANG == 'typescript'
+      id: typescript
+      uses: ./tests/typescript/.github/actions/infra
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        backend_lane: ${{ inputs.backend_lane }}
+        frontend_lane: ${{ inputs.frontend_lane }}
+        tests_lane: ${{ inputs.tests_lane }}
+    - if: env.TESTS_LANG == 'go'
+      id: go
+      uses: ./tests/go/.github/actions/infra
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        backend_lane: ${{ inputs.backend_lane }}
+        frontend_lane: ${{ inputs.frontend_lane }}
+        tests_lane: ${{ inputs.tests_lane }}
+    - if: env.TESTS_LANG == 'csharp'
+      id: csharp
+      uses: ./tests/csharp/.github/actions/infra
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        backend_lane: ${{ inputs.backend_lane }}
+        frontend_lane: ${{ inputs.frontend_lane }}
+        tests_lane: ${{ inputs.tests_lane }}
+    - if: env.TESTS_LANG == 'rust'
+      id: rust
+      uses: ./tests/rust/.github/actions/infra
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        backend_lane: ${{ inputs.backend_lane }}
+        frontend_lane: ${{ inputs.frontend_lane }}
+        tests_lane: ${{ inputs.tests_lane }}
+    - if: >-
+        env.TESTS_LANG != 'java' &&
+        env.TESTS_LANG != 'kotlin' &&
+        env.TESTS_LANG != 'javascript' &&
+        env.TESTS_LANG != 'python' &&
+        env.TESTS_LANG != 'typescript' &&
+        env.TESTS_LANG != 'go' &&
+        env.TESTS_LANG != 'csharp' &&
+        env.TESTS_LANG != 'rust'
+      shell: bash
+      run: |
+        echo "STOP: no infra action for TESTS_LANG=${TESTS_LANG:-unset}" >&2
+        exit 1

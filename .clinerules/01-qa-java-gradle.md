@@ -1,0 +1,56 @@
+---
+paths:
+  - "**/*Tests.java"
+  - "**/*Test.java"
+  - "**/tests/**"
+  - "**/build.gradle"
+---
+
+# takeaway — ui / e2e / api defaults
+
+Модуль: `tests/java/tests-java-junit5-rest_assured-selenide/`.
+
+## Ui (браузер на стабе)
+
+```bash
+cd tests/java/tests-java-junit5-rest_assured-selenide
+./gradlew test -Denv=mock -DincludeTags=ui -DexcludeTags=screenshot
+```
+
+Не называть mount на WireMock end-to-end. `@Tag("mock")` — slice внутри `ui`, не замена `@Tag("ui")`.
+
+## E2e (учебный smoke)
+
+```bash
+cd tests/java/tests-java-junit5-rest_assured-selenide
+./gradlew test -Denv=ci -DincludeTags=e2e -DexcludeTags=screenshot
+```
+
+- Нет Gradle-task `testE2e`. Срез занятия = `@Tag("e2e")` минус screenshot.
+- `@Tag("smoke")` на узких методах — prod slice, не ярус и не замена команды выше.
+- Не `./gradlew test` без `-DincludeTags` для задачи «smoke / e2e».
+- Всегда `-Denv=` (pipeline `ci` / stage / prod). URL не в тестах.
+
+## Один тест
+
+```bash
+./gradlew test -Denv=ci -DincludeTags=e2e -Dtest=HomeTests
+./gradlew test -Denv=ci -DincludeTags=e2e \
+  -Dtest=LoginTests#shouldShowErrorWhenPasswordIsWrong
+./gradlew test -Denv=mock -DincludeTags=ui -Dtest=HeaderTests
+```
+
+## API
+
+```bash
+./gradlew test -Denv=ci -DincludeTags=api
+```
+
+## Allure
+
+- Results: `tests/java/tests-java-junit5-rest_assured-selenide/build/allure-results`
+- Report: `npx allure serve build/allure-results` (из модуля тестов, после `npm ci`)
+
+## Skills
+
+`docs/agent-skills/qa-smoke-debug/SKILL.md` и соседние skills в `docs/agent-skills/`.

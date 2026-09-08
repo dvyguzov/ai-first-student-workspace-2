@@ -1,0 +1,79 @@
+name: e2e
+description: Dispatch e2e to the active tests language (module_dir).
+inputs:
+  module_dir:
+    required: true
+  stand:
+    required: true
+  include_tags:
+    required: false
+    default: ''
+  exclude_tags:
+    required: false
+    default: ''
+  run_e2e:
+    required: false
+    default: 'false'
+  run_screenshot:
+    required: false
+    default: 'false'
+  update_screenshots:
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - id: dir
+      uses: ./.github/actions/resolve-module-dir
+      with:
+        module_dir: ${{ inputs.module_dir }}
+    # Java adapter lives in the canon selenide module; module_dir is the active cell.
+    - if: env.TESTS_LANG == 'java'
+      uses: ./tests/java/tests-java-junit5-rest_assured-selenide/.github/actions/e2e
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        stand: ${{ inputs.stand }}
+        include_tags: ${{ inputs.include_tags }}
+        exclude_tags: ${{ inputs.exclude_tags }}
+        run_e2e: ${{ inputs.run_e2e }}
+        run_screenshot: ${{ inputs.run_screenshot }}
+        update_screenshots: ${{ inputs.update_screenshots }}
+    - if: env.TESTS_LANG == 'javascript'
+      uses: ./tests/javascript/.github/actions/e2e
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        stand: ${{ inputs.stand }}
+        include_tags: ${{ inputs.include_tags }}
+        exclude_tags: ${{ inputs.exclude_tags }}
+        run_e2e: ${{ inputs.run_e2e }}
+        run_screenshot: ${{ inputs.run_screenshot }}
+        update_screenshots: ${{ inputs.update_screenshots }}
+    - if: env.TESTS_LANG == 'python'
+      uses: ./tests/python/.github/actions/e2e
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        stand: ${{ inputs.stand }}
+        include_tags: ${{ inputs.include_tags }}
+        exclude_tags: ${{ inputs.exclude_tags }}
+        run_e2e: ${{ inputs.run_e2e }}
+        run_screenshot: ${{ inputs.run_screenshot }}
+        update_screenshots: ${{ inputs.update_screenshots }}
+    - if: env.TESTS_LANG == 'typescript'
+      uses: ./tests/typescript/.github/actions/e2e
+      with:
+        module_dir: ${{ steps.dir.outputs.dir }}
+        stand: ${{ inputs.stand }}
+        include_tags: ${{ inputs.include_tags }}
+        exclude_tags: ${{ inputs.exclude_tags }}
+        run_e2e: ${{ inputs.run_e2e }}
+        run_screenshot: ${{ inputs.run_screenshot }}
+        update_screenshots: ${{ inputs.update_screenshots }}
+    - if: >-
+        env.TESTS_LANG != 'java' &&
+        env.TESTS_LANG != 'javascript' &&
+        env.TESTS_LANG != 'python' &&
+        env.TESTS_LANG != 'typescript'
+      shell: bash
+      run: |
+        echo "STOP: no e2e action for TESTS_LANG=${TESTS_LANG:-unset}" >&2
+        exit 1

@@ -1,0 +1,12 @@
+---
+description: Coverage only on write layers from docs/coverage-profile.md
+globs: "**/*Tests.java,**/pages/**,docs/coverage-profile.md"
+alwaysApply: false
+---
+
+# Покрытие только по профилю доступа
+
+- Перед новым тестом / планом пирамиды читай `docs/coverage-profile.md`.
+- Ярус с `access: none` не предлагать и не кодить.
+- Один task = один `@Layer` = один стек из профиля.
+- `none` ≠ дыра audit: серая колонка, компенсация — RAG `coverage-access`.

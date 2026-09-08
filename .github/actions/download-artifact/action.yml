@@ -1,0 +1,69 @@
+name: download-artifact
+description: >-
+  Download this run's artifacts via gh CLI. Replaces actions/download-artifact
+  so logs are not polluted by unzip-stream new Buffer() (DEP0005).
+inputs:
+  name:
+    required: false
+    default: ""
+  pattern:
+    required: false
+    default: ""
+  path:
+    required: false
+    default: "."
+  merge-multiple:
+    required: false
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Download artifact
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        ARTIFACT_NAME: ${{ inputs.name }}
+        ARTIFACT_PATTERN: ${{ inputs.pattern }}
+        DEST: ${{ inputs.path }}
+        MERGE_MULTIPLE: ${{ inputs.merge-multiple }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${ARTIFACT_NAME}" && -z "${ARTIFACT_PATTERN}" ]]; then
+          echo "download-artifact: set name or pattern" >&2
+          exit 1
+        fi
+        if [[ -n "${ARTIFACT_NAME}" && -n "${ARTIFACT_PATTERN}" ]]; then
+          echo "download-artifact: name and pattern are mutually exclusive" >&2
+          exit 1
+        fi
+        mkdir -p "${DEST}"
+        TMP="$(mktemp -d "${RUNNER_TEMP}/gh-artifact.XXXXXX")"
+        cleanup() { rm -rf "${TMP}"; }
+        trap cleanup EXIT
+        args=(run download "${GITHUB_RUN_ID}" --repo "${GITHUB_REPOSITORY}" --dir "${TMP}")
+        if [[ -n "${ARTIFACT_NAME}" ]]; then
+          args+=(--name "${ARTIFACT_NAME}")
+        else
+          args+=(--pattern "${ARTIFACT_PATTERN}")
+        fi
+        gh "${args[@]}"
+        # gh --name: zip contents land in --dir (reports/, classes/, …).
+        # Flattening that unwraps reports/ and breaks JaCoCo paths.
+        # gh --pattern: --dir/<artifact-name>/ even for a single match.
+        shopt -s nullglob dotglob
+        entries=("${TMP}"/*)
+        if [[ -n "${ARTIFACT_NAME}" ]]; then
+          wrapped="${TMP}/${ARTIFACT_NAME}"
+          if [[ -d "${wrapped}" && ${#entries[@]} -eq 1 ]]; then
+            cp -a "${wrapped}"/. "${DEST}/"
+          else
+            cp -a "${TMP}"/. "${DEST}/"
+          fi
+        elif [[ "${MERGE_MULTIPLE}" == "true" ]]; then
+          for dir in "${entries[@]}"; do
+            [[ -d "${dir}" ]] || continue
+            cp -a "${dir}"/. "${DEST}/"
+          done
+        else
+          cp -a "${TMP}"/. "${DEST}/"
+        fi
