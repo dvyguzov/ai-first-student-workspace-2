@@ -46,7 +46,7 @@ RAG: `docs/agent-skills/rag/ci-gradle-args.md`, `allure-attach.md`, `cfg-stands.
 
 Зафиксируй: exit code, `tests run` / `failed`.
 
-Якорь: `tests/e2e/HomeTests.pageLoadFetchesItems` — `@Layer("e2e")`, `@Tag("e2e")`.
+Якорь: `tests/e2e/HomeTests.pageLoadFetchesItems` — `@Layer("e2e")`, `@Tag("e2e")`, `@Tag("smoke")`.
 
 Один класс:
 

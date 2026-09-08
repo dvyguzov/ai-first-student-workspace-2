@@ -9,7 +9,7 @@ description: >-
 
 RAG: `cfg-stands`, `ci-github-actions`, `test-pyramid`, `test-layers`.
 
-Upstream курса: [qa-guru/ai-first-student-workspace](https://github.com/qa-guru/ai-first-student-workspace)  
+Upstream курса: [qa-guru/ai-first-student-workspace-2](https://github.com/qa-guru/ai-first-student-workspace-2)  
 Это **не** monorepo и не матрица `/stack/…`. Слово «эталон» на занятии не нужно.
 
 ## When

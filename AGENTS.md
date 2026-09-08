@@ -4,7 +4,7 @@
 - Cline читает `.clinerules/`. Cursor Agent читает `.cursor/rules/*.mdc`. Это разные агенты.
 - Модуль тестов: `tests/java/tests-java-junit5-rest_assured-selenide/`.
 - Поверхность: `docs/coverage-profile.md` (какие ярусы `write`).
-- Продукт: backend `docs/agent-skills/be-add-resource/SKILL.md`; frontend `docs/agent-skills/fe-add-ui/SKILL.md`. Не писать Selenide в том же task.
+- Продукт: backend и frontend этого репо. Не писать Selenide в том же task.
 
 ## Ui (браузер на стабе)
 
@@ -37,4 +37,4 @@ cd tests/java/tests-java-junit5-rest_assured-selenide
 
 ## Workflow
 
-См. `docs/agent-skills/` (`qa-smoke-debug`, `qa-write-test`, `qa-make-full-pyramid`, `be-add-resource`, `fe-add-ui`, `qa-homework-check`, …) и RAG `docs/agent-skills/rag/` (HTTP CRUD: `crud-http`; поверхность: `coverage-access`; продукт: `be-spring-layers`, `fe-react-layers`).
+См. `docs/agent-skills/` (`qa-smoke-debug`, `qa-write-test`, `qa-make-full-pyramid`, `qa-homework-check`, …) и RAG `docs/agent-skills/rag/` (HTTP CRUD: `crud-http`; поверхность: `coverage-access`; продукт: `be-spring-layers`, `fe-react-layers`).

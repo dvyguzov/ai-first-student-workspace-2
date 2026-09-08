@@ -1,7 +1,7 @@
 # Пак QA skills / rules / RAG (AI-first)
 
-Учебный комплект под takeaway  
-[ai-first-student-workspace](https://github.com/qa-guru/ai-first-student-workspace).
+Учебный комплект под takeaway потока 2  
+[ai-first-student-workspace-2](https://github.com/qa-guru/ai-first-student-workspace-2). Поток 1 ([ai-first-student-workspace](https://github.com/qa-guru/ai-first-student-workspace)) не синкать.
 
 Копирование в demo-workspace: [sync-to-workspace.sh](sync-to-workspace.sh).  
 Окно преподавателя: [lesson-02/teacher-second-workspace.md](../qa-guru/ai-first-qa/lesson-02/teacher-second-workspace.md) (занятия 3–4 — тот же cwd).

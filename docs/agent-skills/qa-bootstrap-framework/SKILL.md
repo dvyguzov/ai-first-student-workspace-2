@@ -24,7 +24,7 @@ RAG: `e2e-layers`, `test-pyramid`, `cfg-env-profile`, `cfg-base-url`, `cfg-stand
 ## Steps
 
 1. База: clone  
-   `https://github.com/qa-guru/ai-first-student-workspace`  
+   `https://github.com/qa-guru/ai-first-student-workspace-2`  
    или учебный zip с занятия.
 2. Чеклист слоёв (должно появиться / остаться):
 
