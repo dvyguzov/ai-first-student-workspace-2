@@ -44,12 +44,12 @@ cd tests/java/tests-java-junit5-rest_assured-selenide
 ./gradlew test -Denv=ci -DincludeTags=e2e -DexcludeTags=screenshot,mock
 ```
 
-CI: `.github/workflows/ci.yml` (same orchestrator as the clone; stack knobs in `env:`).  
-Prod stand: [https://ai-first.autotests.ai/](https://ai-first.autotests.ai/) (`-Denv=prod`).  
-Stage: [https://stage.ai-first.autotests.ai/](https://stage.ai-first.autotests.ai/) (`-Denv=stage`).
+Стенд потока 2 — локальный compose (health `:8800`, UI `:9821`). Отдельных prod/stage хостов нет.
+
+CI: `.github/workflows/ci.yml` (stack knobs in `env:`).
 
 Maintainers: refresh from autotests-ai-multistack-app in the zero-design-system monorepo:
 
 ```bash
-./generators/render/render.sh --preset singlestack
+./generators/render/render.sh --preset singlestack-2
 ```
