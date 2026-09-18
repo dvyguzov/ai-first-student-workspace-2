@@ -33,7 +33,7 @@ RAG: `hw-check-verdict`, `hw-check-ai-first` (и `hw-check-voice`, если фа
 
 ## Авто-незачёт
 
-Простыня skill/rule >250 строк · rule противоречит skill · агент закоммитил сам · `reset --hard` · токен в файле · выдуманный `testE2e` · `@Layer("screenshot")` как ярус (зан. 4).
+Простыня skill/rule >250 строк · rule противоречит skill · агент закоммитил сам · `reset --hard` · токен в файле · выдуманный `testE2e` · занятие 4: нет `007-*.md` / файл `006` / audit вместо ADR.
 
 ## Example prompt
 

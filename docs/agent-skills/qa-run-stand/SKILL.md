@@ -7,7 +7,7 @@ description: >-
 
 # Запуск на стенде (mock / pipeline / stage / prod)
 
-RAG: `cfg-stands`, `cfg-env-profile`, `cfg-base-url`, `remote-selenoid`, `ci-gradle-args`.
+RAG (≤4): `cfg-stands`, `cfg-env-profile`, `cfg-base-url`, `ci-gradle-args`. Remote hub — добавь `remote-selenoid` вместо одного из cfg-*.
 
 Код теста один. Меняется только `-Denv=` (и `remoteUrl` на удалённом хабе).
 

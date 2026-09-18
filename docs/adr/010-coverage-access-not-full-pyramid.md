@@ -15,10 +15,11 @@
 2. `qa-coverage-audit` / `qa-pyramid-plan` / `qa-write-test` / `qa-make-full-pyramid` читают профиль **до** выбора `@Layer`.
 3. `none` — серая колонка, не дыра этого чата. Компенсация — RAG `coverage-access`.
 4. Смешанные стеки по ярусам — норма. Не новая cartesian-cell в `matrix.yaml`.
+5. Harness курса — корень окна (`.clinerules/`, `docs/agent-skills/`). Стек не копирует OS в модуль (`<module>/.harnes`).
 
 ## Последствия
 
-- Учебный takeaway: все ярусы `write` (java-spring). Workplace-вариации — тот же файл, другие значения.
+- Учебный takeaway: все ярусы `write` (java-spring). Workplace-вариации — тот же файл, другие значения. Другой стек = `stack`/`module` в профиле, не второй harness.
 - Лист [36](https://lab.qa.guru/36-login-lab.html) пока закреплён на e2e (тумблеры — слои агента). Ярусы доступа туда — отдельный проход.
 - Номер **010** — пак. Takeaway 007–009 заняты продуктом (backend / frontend / login-401).
 

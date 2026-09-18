@@ -32,7 +32,11 @@ RAG: id чанков, которые держат «как», не «почем�
 ```
 
 Канон курса: `docs/adr/005-screenshot-not-layer.md` — screenshot не `@Layer`.  
-Поверхность автоматизации: `docs/adr/010-coverage-access-not-full-pyramid.md` + чанк `coverage-access`.  
+Тот же сюжет, что ДЗ RAG: `docs/adr/009-login-401-is-api.md` — JSON 401 не новый e2e.  
+Свой учебный файл — `docs/adr/007-….md` (**006 уже занят** `one-note`, на эфире не открываем).  
+Поверхность автоматизации: `docs/adr/010-coverage-access-not-full-pyramid.md` + чанк `coverage-access` — **следующее занятие**, не эфир ADR.  
+Harness в корне, агенты-модули (`harness.agents`), без `<module>/.harnes` — учебный ADR пака 011, **не** monorepo `docs/adr/011-cursor-host-pre-router-feasibility.md`.  
+Канон в git, не брендовый QA-агент / Cursor SDK как учебный продукт — учебный ADR пака 012, **не** monorepo `docs/adr/012-allure-report-kit.md`. SDK ≠ курс ≠ assemble.  
 Факты контракта фичи — RAG (пример: `crud-http`); почему takeaway — синглтон/RFC — учебный ADR пака 006, **не** monorepo `docs/adr/006-allurerc-mjs-ethalon.md`.
 
 ## Don't

@@ -7,7 +7,7 @@ description: >-
 
 # 100% пирамида — план и один шаг
 
-RAG: `coverage-access`, `test-pyramid`, `test-layers`, `test-api-layer`, `cfg-stands`, `adr-when`.  
+RAG (≤4): `coverage-access`, `test-pyramid`, `test-layers`, `cfg-stands`.  
 ADR: `docs/adr/005-screenshot-not-layer.md`, `docs/adr/010-coverage-access-not-full-pyramid.md`. Сначала `qa-coverage-audit`, потом этот план, потом `qa-write-test`.  
 Профиль: `docs/coverage-profile.md` — дыра только на `write`.
 

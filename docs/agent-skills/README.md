@@ -14,7 +14,7 @@ Demo-workspace: [sync-to-workspace.sh](sync-to-workspace.sh)
 docs/agent-skills/
 ├── PACK.md
 ├── adr/                      ← учебные ADR (занятие 4)
-├── rag/                      ← дистиллят чанков (id = имя файла)
+├── rag/                      ← дистиллят чанков (id = имя файла; слой OS/cell/course — rag/README.md)
 ├── examples/multistack/      ← заполненный takeaway (команды живые)
 └── templates/                ← placeholder'ы + skill-stub.md + adr-stub.md
 ```
@@ -37,7 +37,7 @@ docs/agent-skills/
 
 ## Занятия 3–4
 
-- [Занятие 3 — RAG + CI](../qa-guru/ai-first-qa/lesson-03/README.md)
-- [Занятие 4 — ADR + пирамида](../qa-guru/ai-first-qa/lesson-04/README.md)
+- [Занятие 3 — RAG](../qa-guru/ai-first-qa/lesson-03/README.md) (CI позже)
+- [Занятие 4 — ADR](../qa-guru/ai-first-qa/lesson-04/README.md) (пирамида — следующее занятие)
 
 Студентам — пути **своего** репо. Не копировать monorepo `projects/…/ethalon/`.

@@ -1,7 +1,7 @@
 # Поверхность автоматизации (takeaway)
 
 Ярус × доступ × стек. Как читать — RAG `docs/agent-skills/rag/coverage-access.md`.  
-Шаблон под другой контур: `docs/agent-skills/_templates/coverage-profile.md` (после sync).
+Шаблон под другой контур: `docs/agent-skills/_templates/coverage-profile.md` (после sync). Другой стек — id/путь своей ячейки, не список из шаблона.
 
 Это **не** стек продукта целиком и не `layers:` модуля в `matrix.yaml`.
 
@@ -43,7 +43,12 @@ automation:
     access: write
     stack: java-junit5-rest_assured-selenide
     module: tests/java/tests-java-junit5-rest_assured-selenide
+
+harness:
+  agents:
+    cline:  { access: write, module: .clinerules }
+    cursor: { access: write, module: .cursor/rules }
 ```
 
-`access`: `write` | `read` | `none`.  
+`access` яруса: `write` | `read` | `none`. Агенты: `write` | `none` (ADR 011).  
 Workplace (API C#, UI Python, backend закрыт) — не этот файл; пример в RAG `coverage-access`.

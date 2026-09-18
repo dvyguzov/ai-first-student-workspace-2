@@ -11,3 +11,4 @@ alwaysApply: false
 - Chrome на стабе = `@Layer("ui")`, не e2e.
 - Селекторы не трогать без triage (skill flaky / review).
 - API-контракт не закрывать новым e2e, если уже есть `tests/api`.
+- RAG на task — **2–4 чанка**, которые назвал skill или промпт. Не всю папку `docs/agent-skills/rag/`.

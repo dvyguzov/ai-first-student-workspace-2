@@ -9,7 +9,7 @@ description: >-
 
 Это **не** «сгенерируй JUnit из головы». Канон курса: клон takeaway или чеклист слоёв + RAG.
 
-RAG: `e2e-layers`, `test-pyramid`, `cfg-env-profile`, `cfg-base-url`, `cfg-stands`.
+RAG (≤4): `e2e-layers`, `test-pyramid`, `cfg-env-profile`, `cfg-stands`.
 
 ## When
 

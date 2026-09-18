@@ -7,7 +7,7 @@ description: >-
 
 # Ревью тестового фреймворка
 
-RAG: `e2e-layers`, `base-lifecycle`, `po-locators`, `test-pyramid`, `allure-reporting-requirements`, `cfg-stands`.
+RAG (≤4): `e2e-layers`, `po-locators`, `test-pyramid`, `cfg-stands`.
 
 ## When
 

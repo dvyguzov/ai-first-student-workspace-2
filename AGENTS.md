@@ -37,4 +37,4 @@ cd tests/java/tests-java-junit5-rest_assured-selenide
 
 ## Workflow
 
-См. `docs/agent-skills/` (`qa-smoke-debug`, `qa-write-test`, `qa-make-full-pyramid`, `qa-homework-check`, …) и RAG `docs/agent-skills/rag/` (HTTP CRUD: `crud-http`; поверхность: `coverage-access`; продукт: `be-spring-layers`, `fe-react-layers`).
+См. `docs/agent-skills/` (`qa-smoke-debug`, `qa-write-test`, `qa-make-full-pyramid`, `qa-homework-check`, …) и RAG `docs/agent-skills/rag/` (HTTP CRUD: `crud-http`; поверхность: `coverage-access`). Модули продукта — `docs/coverage-profile.md`, не отдельный product-RAG.

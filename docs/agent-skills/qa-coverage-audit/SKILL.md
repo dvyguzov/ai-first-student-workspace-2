@@ -7,7 +7,7 @@ description: >-
 
 # Оцени покрытие
 
-RAG: `coverage-access`, `test-pyramid`, `test-layers`, `test-taxonomy`, `test-api-layer`.  
+RAG (≤4): `coverage-access`, `test-pyramid`, `test-layers`, `test-api-layer`.  
 Профиль: `docs/coverage-profile.md` (нет файла — спроси, не рисуй полную пирамиду workplace).
 
 ## When
