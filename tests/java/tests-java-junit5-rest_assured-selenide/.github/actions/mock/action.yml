@@ -35,6 +35,23 @@ runs:
       with:
         chrome-version: ${{ env.CHROME_FOR_TESTING_VERSION }}
         install-chromedriver: true
+    # TEMP diagnostics (remove once ui-tests is green): why Chrome exits on the runner.
+    - name: Probe Chrome startup
+      shell: bash
+      env:
+        CHROME_PATH: ${{ steps.setup-chrome.outputs.chrome-path }}
+      run: |
+        set +e
+        echo "--- chrome version ---"
+        "$CHROME_PATH" --version
+        echo "--- sandbox helper ---"
+        ls -l "$(dirname "$CHROME_PATH")/chrome-sandbox"
+        echo "--- apparmor userns ---"
+        sysctl kernel.apparmor_restrict_unprivileged_userns
+        echo "--- chrome WITH sandbox ---"
+        "$CHROME_PATH" --headless=new --disable-gpu --dump-dom about:blank 2>&1 | head -20
+        echo "--- chrome --no-sandbox ---"
+        "$CHROME_PATH" --headless=new --no-sandbox --disable-gpu --dump-dom about:blank 2>&1 | head -5
     - uses: docker/setup-buildx-action@v4
     - id: fe
       shell: bash

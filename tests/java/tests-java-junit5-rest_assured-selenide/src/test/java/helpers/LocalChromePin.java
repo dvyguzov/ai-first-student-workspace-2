@@ -25,6 +25,9 @@ public final class LocalChromePin {
     private static final String INSTALLER = "scripts/install-chrome-for-testing.sh";
     private static final String CHROME_BINARY_ENV = "CHROME_BINARY_PATH";
     private static final String CHROMEDRIVER_ENV = "CHROMEDRIVER_PATH";
+    /** Chrome args Selenide reads from the JVM ({@code AbstractChromiumDriverFactory}). */
+    private static final String CHROME_ARGS_PROPERTY = "chromeoptions.args";
+    private static final String NO_SANDBOX = "--no-sandbox";
 
     private LocalChromePin() {
     }
@@ -60,6 +63,30 @@ public final class LocalChromePin {
         Configuration.browserBinary = chrome.toString();
         System.setProperty("webdriver.chrome.driver", driver.toString());
         Configuration.browserVersion = null;
+        keepChromeAliveWithoutSandbox();
+    }
+
+    /**
+     * Chrome refuses to stay up when its sandbox cannot be built: it needs either
+     * a setuid {@code chrome-sandbox} helper or unprivileged user namespaces.
+     * CI runners give neither — Chrome for Testing is unzipped into the tool
+     * cache without the setuid bit, and Ubuntu 24.04 AppArmor blocks unprivileged
+     * userns. Every session then dies with
+     * {@code session not created: Chrome instance exited}.
+     * <p>
+     * Linux only: desktop Linux and macOS keep the sandbox. An explicit
+     * {@code -Dchromeoptions.args} that already carries the flag wins.
+     */
+    private static void keepChromeAliveWithoutSandbox() {
+        if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux")) {
+            return;
+        }
+        var args = System.getProperty(CHROME_ARGS_PROPERTY, "");
+        if (args.contains(NO_SANDBOX)) {
+            return;
+        }
+        System.setProperty(CHROME_ARGS_PROPERTY,
+                args.isBlank() ? NO_SANDBOX : args + "," + NO_SANDBOX);
     }
 
     private static Path executableOverride(String environmentVariable) {
